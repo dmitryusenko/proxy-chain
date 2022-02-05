@@ -90,6 +90,8 @@ export class Server extends EventEmitter {
 
     connections: Map<unknown, Socket>;
 
+    connectHeaders?: Array<string>;
+
     /**
      * Initializes a new instance of Server class.
      * @param options
@@ -129,6 +131,7 @@ export class Server extends EventEmitter {
         prepareRequestFunction?: PrepareRequestFunction,
         verbose?: boolean,
         authRealm?: unknown,
+        connectHeaders?: Array<string>
     } = {}) {
         super();
 
@@ -141,6 +144,7 @@ export class Server extends EventEmitter {
         this.prepareRequestFunction = options.prepareRequestFunction;
         this.authRealm = options.authRealm || DEFAULT_AUTH_REALM;
         this.verbose = !!options.verbose;
+        this.connectHeaders = options.connectHeaders;
 
         this.server = http.createServer();
         this.server.on('clientError', this.onClientError.bind(this));
@@ -268,7 +272,15 @@ export class Server extends EventEmitter {
             const handlerOpts = await this.prepareRequestHandling(request);
             handlerOpts.srcHead = head;
 
-            const data = { request, sourceSocket: socket, head, handlerOpts: handlerOpts as ChainOpts, server: this, isPlain: false };
+            const data = {
+                request,
+                sourceSocket: socket,
+                head,
+                handlerOpts: handlerOpts as ChainOpts,
+                server: this,
+                isPlain: false,
+                connectHeaders: this.connectHeaders,
+            };
 
             if (handlerOpts.upstreamProxyUrlParsed) {
                 this.log(socket.proxyChainId, `Using HandlerTunnelChain => ${request.url}`);

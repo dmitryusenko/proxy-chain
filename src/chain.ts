@@ -37,6 +37,7 @@ interface ChainOpts {
     server: EventEmitter & { log: (...args: any[]) => void; };
     isPlain: boolean;
     localAddress?: string;
+    connectHeaders?: Array<string>;
 }
 
 /**
@@ -52,6 +53,7 @@ export const chain = (
         handlerOpts,
         server,
         isPlain,
+        connectHeaders,
     }: ChainOpts,
 ): void => {
     if (head && head.length > 0) {
@@ -68,6 +70,7 @@ export const chain = (
         headers: [
             'host',
             request.url!,
+            ...(connectHeaders || []),
         ],
         localAddress: handlerOpts.localAddress,
     };

@@ -102,6 +102,7 @@ describe('utils.anonymizeProxyNoPassword', function () {
                     anonymizeProxy(`http://${proxyAuth.username}:${proxyAuth.password}@127.0.0.1:${proxyPort}`),
                     new Promise((resolve, reject) => {
                         anonymizeProxy(`http://${proxyAuth.username}:${proxyAuth.password}@127.0.0.1:${proxyPort}`,
+                            [],
                             (err, result) => {
                                 if (err) return reject(err);
                                 resolve(result);
