@@ -1,3 +1,7 @@
+2.0.2 / 2022-02-05
+==================
+- Allow passing `connectHeaders` to `anonymizeProxy` [f9601b8](https://github.com/dmitryusenko/proxy-chain/commit/f9601b8e53386ec786065c4d57c80c5060f61a15)
+
 2.0.0 / 2021-10-12
 ==================
 - Simplify code, fix tests, move to TypeScript [#162](https://github.com/apify/proxy-chain/pull/162)
