@@ -118,12 +118,42 @@ describe('utils.anonymizeProxy', function () {
         assert.throws(() => { anonymizeProxy('socks://whatever.com'); }, Error);
         assert.throws(() => { anonymizeProxy('https://whatever.com'); }, Error);
         assert.throws(() => { anonymizeProxy('socks5://whatever.com'); }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: 'socks://whatever.com' });
+        }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: 'https://whatever.com' });
+        }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: 'socks5://whatever.com' });
+        }, Error);
+    });
+
+    it('throws for invalid ports', () => {
+        assert.throws(() => {
+            anonymizeProxy({ url: 'http://whatever.com', port: -16 });
+        }, Error);
+        assert.throws(() => {
+            anonymizeProxy({
+                url: 'http://whatever.com',
+                port: 4324324324,
+            });
+        }, Error);
     });
 
     it('throws for invalid URLs', () => {
         assert.throws(() => { anonymizeProxy('://whatever.com'); }, Error);
         assert.throws(() => { anonymizeProxy('https://whatever.com'); }, Error);
         assert.throws(() => { anonymizeProxy('socks5://whatever.com'); }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: '://whatever.com' });
+        }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: 'https://whatever.com' });
+        }, Error);
+        assert.throws(() => {
+            anonymizeProxy({ url: 'socks5://whatever.com' });
+        }, Error);
     });
 
     it('keeps already anonymous proxies (both with callbacks and promises)', () => {

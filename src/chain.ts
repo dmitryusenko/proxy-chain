@@ -1,4 +1,5 @@
 import http from 'http';
+import dns from 'dns';
 import { URL } from 'url';
 import { EventEmitter } from 'events';
 import { Buffer } from 'buffer';
@@ -22,11 +23,15 @@ interface Options {
     headers: string[];
     path?: string;
     localAddress?: string;
+    family?: number;
+    lookup?: typeof dns['lookup'];
 }
 
 export interface HandlerOpts {
     upstreamProxyUrlParsed: URL;
     localAddress?: string;
+    ipFamily?: number;
+    dnsLookup?: typeof dns['lookup'];
 }
 
 interface ChainOpts {
@@ -36,7 +41,6 @@ interface ChainOpts {
     handlerOpts: HandlerOpts;
     server: EventEmitter & { log: (...args: any[]) => void; };
     isPlain: boolean;
-    localAddress?: string;
     connectHeaders?: Array<string>;
 }
 
@@ -57,7 +61,14 @@ export const chain = (
     }: ChainOpts,
 ): void => {
     if (head && head.length > 0) {
-        throw new Error(`Unexpected data on CONNECT: ${head.length} bytes`);
+        // HTTP/1.1 has no defined semantics when sending payload along with CONNECT and servers can reject the request.
+        // HTTP/2 only says that subsequent DATA frames must be transferred after HEADERS has been sent.
+        // HTTP/3 says that all DATA frames should be transferred (implies pre-HEADERS data).
+        //
+        // Let's go with the HTTP/3 behavior.
+        // There are also clients that send payload along with CONNECT to save milliseconds apparently.
+        // Beware of upstream proxy servers that send out valid CONNECT responses with diagnostic data such as IPs!
+        sourceSocket.unshift(head);
     }
 
     const { proxyChainId } = sourceSocket;
@@ -73,6 +84,8 @@ export const chain = (
             ...(connectHeaders || []),
         ],
         localAddress: handlerOpts.localAddress,
+        family: handlerOpts.ipFamily,
+        lookup: handlerOpts.dnsLookup,
     };
 
     if (proxy.username || proxy.password) {
@@ -84,7 +97,6 @@ export const chain = (
     client.on('connect', (response, targetSocket, clientHead) => {
         countTargetBytes(sourceSocket, targetSocket);
 
-        // @ts-expect-error Missing types
         if (sourceSocket.readyState !== 'open') {
             // Sanity check, should never reach.
             targetSocket.destroy();
@@ -116,8 +128,8 @@ export const chain = (
         }
 
         if (clientHead.length > 0) {
-            targetSocket.destroy(new Error(`Unexpected data on CONNECT: ${clientHead.length} bytes`));
-            return;
+            // See comment above
+            targetSocket.unshift(clientHead);
         }
 
         server.emit('tunnelConnectResponded', {
@@ -157,7 +169,6 @@ export const chain = (
         server.log(proxyChainId, `Failed to connect to upstream proxy: ${error.stack}`);
 
         // The end socket may get connected after the client to proxy one gets disconnected.
-        // @ts-expect-error Missing types
         if (sourceSocket.readyState === 'open') {
             if (isPlain) {
                 sourceSocket.end();

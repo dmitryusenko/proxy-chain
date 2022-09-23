@@ -1,3 +1,4 @@
+import dns from 'dns';
 import http from 'http';
 import https from 'https';
 import stream from 'stream';
@@ -15,11 +16,15 @@ interface Options {
     insecureHTTPParser: boolean;
     path?: string;
     localAddress?: string;
+    family?: number;
+    lookup?: typeof dns['lookup'];
 }
 
 export interface HandlerOpts {
     upstreamProxyUrlParsed: URL;
     localAddress?: string;
+    ipFamily?: number;
+    dnsLookup?: typeof dns['lookup'];
 }
 
 /**
@@ -53,6 +58,8 @@ export const forward = async (
         headers: validHeadersOnly(request.rawHeaders),
         insecureHTTPParser: true,
         localAddress: handlerOpts.localAddress,
+        family: handlerOpts.ipFamily,
+        lookup: handlerOpts.dnsLookup,
     };
 
     // In case of proxy the path needs to be an absolute URL
@@ -99,8 +106,9 @@ export const forward = async (
             );
 
             resolve();
-        } catch (error) {
-            reject(error);
+        } catch {
+            // Client error, pipeline already destroys the streams, ignore.
+            resolve();
         }
     });
 
@@ -108,15 +116,25 @@ export const forward = async (
         countTargetBytes(request.socket, socket);
     });
 
-    try {
-        // `pipeline` automatically handles all the events and data
-        await pipeline(
-            request,
-            client,
-        );
-    } catch (error: any) {
-        error.proxy = proxy;
+    // Can't use pipeline here as it automatically destroys the streams
+    request.pipe(client);
+    client.on('error', (error: NodeJS.ErrnoException) => {
+        if (response.headersSent) {
+            return;
+        }
 
-        reject(error);
-    }
+        const statuses: {[code: string]: number | undefined} = {
+            ENOTFOUND: proxy ? 502 : 404,
+            ECONNREFUSED: 502,
+            ECONNRESET: 502,
+            EPIPE: 502,
+            ETIMEDOUT: 504,
+        };
+
+        response.statusCode = statuses[error.code!] ?? 502;
+        response.setHeader('content-type', 'text/plain; charset=utf-8');
+        response.end(http.STATUS_CODES[response.statusCode]);
+
+        resolve();
+    });
 });

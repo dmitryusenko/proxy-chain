@@ -1,4 +1,5 @@
 import net from 'net';
+import dns from 'dns';
 import http from 'http';
 import util from 'util';
 import { URL } from 'url';
@@ -14,6 +15,7 @@ import { forward, HandlerOpts as ForwardOpts } from './forward';
 import { direct } from './direct';
 import { handleCustomResponse, HandlerOpts as CustomResponseOpts } from './custom_response';
 import { Socket } from './socket';
+import { normalizeUrlPort } from './utils/normalize_url_port';
 
 // TODO:
 // - Implement this requirement from rfc7230
@@ -45,15 +47,17 @@ type HandlerOpts = {
     isHttp: boolean;
     customResponseFunction: CustomResponseOpts['customResponseFunction'] | null;
     localAddress?: string;
+    ipFamily?: number;
+    dnsLookup?: typeof dns['lookup'];
 };
 
 export type PrepareRequestFunctionOpts = {
-    connectionId: unknown;
+    connectionId: number;
     request: http.IncomingMessage;
     username: string;
     password: string;
     hostname: string;
-    port: string;
+    port: number;
     isHttp: boolean;
 };
 
@@ -63,6 +67,8 @@ export type PrepareRequestFunctionResult = {
     failMsg?: string;
     upstreamProxyUrl?: string | null;
     localAddress?: string;
+    ipFamily?: number;
+    dnsLookup?: typeof dns['lookup'];
 };
 
 type Promisable<T> = T | Promise<T>;
@@ -88,7 +94,7 @@ export class Server extends EventEmitter {
 
     stats: { httpRequestCount: number; connectRequestCount: number; };
 
-    connections: Map<unknown, Socket>;
+    connections: Map<number, Socket>;
 
     connectHeaders?: Array<string>;
 
@@ -184,8 +190,7 @@ export class Server extends EventEmitter {
      * Needed for abrupt close of the server.
      */
     registerConnection(socket: Socket): void {
-        const weakId = Math.random().toString(36).slice(2);
-        const unique = Symbol(weakId);
+        const unique = this.lastHandlerId++;
 
         socket.proxyChainId = unique;
         this.connections.set(unique, socket);
@@ -204,6 +209,12 @@ export class Server extends EventEmitter {
      * Handles incoming sockets, useful for error handling
      */
     onConnection(socket: Socket): void {
+        // https://github.com/nodejs/node/issues/23858
+        if (!socket.remoteAddress) {
+            socket.destroy();
+            return;
+        }
+
         this.registerConnection(socket);
 
         // We need to consume socket errors, because the handlers are attached asynchronously.
@@ -226,14 +237,6 @@ export class Server extends EventEmitter {
 
         if (error.message === '407 Proxy Authentication Required') {
             return new RequestError('Invalid upstream proxy credentials', 502);
-        }
-
-        if (error.code === 'ENOTFOUND') {
-            if ((error as any).proxy) {
-                return new RequestError('Failed to connect to upstream proxy', 502);
-            }
-
-            return new RequestError('Target website does not exist', 404);
         }
 
         return error;
@@ -301,7 +304,7 @@ export class Server extends EventEmitter {
     getHandlerOpts(request: http.IncomingMessage): HandlerOpts {
         const handlerOpts: HandlerOpts = {
             server: this,
-            id: ++this.lastHandlerId,
+            id: (request.socket as Socket).proxyChainId!,
             srcRequest: request,
             srcHead: null,
             trgParsed: null,
@@ -315,7 +318,11 @@ export class Server extends EventEmitter {
 
         if (request.method === 'CONNECT') {
             // CONNECT server.example.com:80 HTTP/1.1
-            handlerOpts.trgParsed = new URL(`connect://${request.url}`);
+            try {
+                handlerOpts.trgParsed = new URL(`connect://${request.url}`);
+            } catch {
+                throw new RequestError(`Target "${request.url}" could not be parsed`, 400);
+            }
 
             if (!handlerOpts.trgParsed.hostname || !handlerOpts.trgParsed.port) {
                 throw new RequestError(`Target "${request.url}" could not be parsed`, 400);
@@ -358,18 +365,18 @@ export class Server extends EventEmitter {
      * @param handlerOpts
      */
     async callPrepareRequestFunction(request: http.IncomingMessage, handlerOpts: HandlerOpts): Promise<PrepareRequestFunctionResult> {
-        // Authenticate the request using a user function (if provided)
         if (this.prepareRequestFunction) {
             const funcOpts: PrepareRequestFunctionOpts = {
-                connectionId: (request.socket as Socket).proxyChainId,
+                connectionId: (request.socket as Socket).proxyChainId!,
                 request,
                 username: '',
                 password: '',
                 hostname: handlerOpts.trgParsed!.hostname,
-                port: handlerOpts.trgParsed!.port,
+                port: normalizeUrlPort(handlerOpts.trgParsed!),
                 isHttp: handlerOpts.isHttp,
             };
 
+            // Authenticate the request using a user function (if provided)
             const proxyAuth = request.headers['proxy-authorization'];
             if (proxyAuth) {
                 const auth = parseAuthorizationHeader(proxyAuth);
@@ -378,7 +385,10 @@ export class Server extends EventEmitter {
                     throw new RequestError('Invalid "Proxy-Authorization" header', 400);
                 }
 
-                if (auth.type !== 'Basic') {
+                // https://datatracker.ietf.org/doc/html/rfc7617#page-3
+                // Note that both scheme and parameter names are matched case-
+                // insensitively.
+                if (auth.type.toLowerCase() !== 'basic') {
                     throw new RequestError('The "Proxy-Authorization" header must have the "Basic" type.', 400);
                 }
 
@@ -403,6 +413,8 @@ export class Server extends EventEmitter {
         const funcResult = await this.callPrepareRequestFunction(request, handlerOpts);
 
         handlerOpts.localAddress = funcResult.localAddress;
+        handlerOpts.ipFamily = funcResult.ipFamily;
+        handlerOpts.dnsLookup = funcResult.dnsLookup;
 
         // If not authenticated, request client to authenticate
         if (funcResult.requestAuthentication) {
@@ -464,8 +476,7 @@ export class Server extends EventEmitter {
             this.emit('requestFailed', { error, request });
         }
 
-        // Emit 'connectionClosed' event if request failed and connection was already reported
-        this.log(proxyChainId, 'Closed because request failed with error');
+        this.log(proxyChainId, 'Closing because request failed with error');
     }
 
     /**
@@ -553,14 +564,14 @@ export class Server extends EventEmitter {
     /**
      * Gets array of IDs of all active connections.
      */
-    getConnectionIds(): unknown[] {
+    getConnectionIds(): number[] {
         return [...this.connections.keys()];
     }
 
     /**
      * Gets data transfer statistics of a specific proxy connection.
      */
-    getConnectionStats(connectionId: unknown): ConnectionStats | undefined {
+    getConnectionStats(connectionId: number): ConnectionStats | undefined {
         const socket = this.connections.get(connectionId);
         if (!socket) return undefined;
 
@@ -574,6 +585,20 @@ export class Server extends EventEmitter {
         };
 
         return result;
+    }
+
+    /**
+     * Forcibly close a specific pending proxy connection.
+     */
+    closeConnection(connectionId: number): void {
+        this.log(null, 'Closing pending socket');
+
+        const socket = this.connections.get(connectionId);
+        if (!socket) return;
+
+        socket.destroy();
+
+        this.log(null, `Destroyed pending socket`);
     }
 
     /**

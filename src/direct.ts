@@ -1,4 +1,5 @@
 import net from 'net';
+import dns from 'dns';
 import { Buffer } from 'buffer';
 import { URL } from 'url';
 import { EventEmitter } from 'events';
@@ -7,6 +8,8 @@ import { Socket } from './socket';
 
 export interface HandlerOpts {
     localAddress?: string;
+    ipFamily?: number;
+    dnsLookup?: typeof dns['lookup'];
 }
 
 interface DirectOpts {
@@ -42,13 +45,16 @@ export const direct = (
     }
 
     if (head.length > 0) {
-        throw new Error(`Unexpected data on CONNECT: ${head.length} bytes`);
+        // See comment in chain.ts
+        sourceSocket.unshift(head);
     }
 
     const options = {
         port: Number(url.port),
         host: url.hostname,
         localAddress: handlerOpts.localAddress,
+        family: handlerOpts.ipFamily,
+        lookup: handlerOpts.dnsLookup,
     };
 
     if (options.host[0] === '[') {

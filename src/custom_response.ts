@@ -1,14 +1,15 @@
-import http from 'http';
+import type http from 'http';
+import type { Buffer } from 'buffer';
 
-export interface Result {
+export interface CustomResponse {
     statusCode?: number;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Buffer;
     encoding?: BufferEncoding;
 }
 
 export interface HandlerOpts {
-    customResponseFunction: () => Result | Promise<Result>,
+    customResponseFunction: () => CustomResponse | Promise<CustomResponse>,
 }
 
 export const handleCustomResponse = async (
